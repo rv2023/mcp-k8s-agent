@@ -11,12 +11,14 @@ from mcp.types import Tool, TextContent
 
 import tools_read
 
+
 print("MCP k8s-agent server starting...", file=sys.stderr)
 
 server = Server(
     name="mcp-k8s-agent",
     version="0.1.0",
 )
+
 
 def _tool_schema_list_resources() -> Dict[str, Any]:
     return {
@@ -31,6 +33,7 @@ def _tool_schema_list_resources() -> Dict[str, Any]:
         "required": ["namespace", "group", "version", "plural"],
         "additionalProperties": False,
     }
+
 
 def _tool_schema_get_resource() -> Dict[str, Any]:
     s = _tool_schema_list_resources()

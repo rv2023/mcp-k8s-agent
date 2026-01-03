@@ -1,0 +1,2 @@
+mcp
+kubernetes>=29.0.0

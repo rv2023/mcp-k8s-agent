@@ -1,0 +1,12 @@
+README.md
+gate.py
+pyproject.toml
+sanitize.py
+server.py
+tools_read.py
+tools_write.py
+mcp_k8s_agent.egg-info/PKG-INFO
+mcp_k8s_agent.egg-info/SOURCES.txt
+mcp_k8s_agent.egg-info/dependency_links.txt
+mcp_k8s_agent.egg-info/requires.txt
+mcp_k8s_agent.egg-info/top_level.txt

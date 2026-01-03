@@ -1,0 +1,12 @@
+[project]
+name = "mcp-k8s-agent"
+version = "0.1.0"
+description = "MCP server that exposes safe Kubernetes read/write tools (Phase 1: read-only)"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp",
+  "kubernetes>=29.0.0",
+]
+
+[tool.setuptools]
+py-modules = ["server", "gate", "tools_read", "tools_write", "sanitize"]
