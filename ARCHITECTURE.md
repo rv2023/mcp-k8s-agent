@@ -48,7 +48,53 @@ These rules apply to **all phases** and **all tools**:
 Kubernetes API reference:  
 https://kubernetes.io/docs/reference/kubernetes-api/
 
+### Central Safety Gate (gate.py)
+
+All Kubernetes access — including reads, events, and logs — is enforced through
+a single policy gate implemented in `gate.py`.
+
+Every tool call constructs a `RequestContext` and must pass `enforce()` **before**
+any Kubernetes API interaction occurs.
+
+This includes:
+- standard read operations (`get`, `list`)
+- event retrieval
+- pod log access
+- delete operations (Phase 2)
+
+There are no exceptions or bypass paths.
 ---
+
+#### Logs and Events
+
+The agent supports Kubernetes-native observability only:
+
+- Namespace-scoped events
+- Pod stdout/stderr logs via the Kubernetes API
+
+Constraints:
+- Pod logs require explicit `namespace` and `pod` name
+- Logs are available in all namespaces, including `kube-system`
+- Node OS logs, kubelet logs, and host-level logs are **not accessible**
+- No cloud provider logs (e.g., CloudWatch / CloudTrail)
+
+All log and event access is routed through the central safety gate.
+
+### Explicit Non-Goals
+
+The following are intentional non-goals of this system:
+
+- Accessing Secrets or ConfigMaps
+- Executing commands inside pods
+- Reading node or host OS logs
+- SSH / SSM access to nodes
+- Accessing cloud provider logs
+- Cluster-wide scraping or bulk operations
+- Multi-object fan-out behind a single tool
+
+These are architectural decisions, not missing features.
+
+
 
 ## Phase 0 — Current State (Completed)
 
@@ -136,6 +182,10 @@ Allow deletion of **exactly one Kubernetes object per call**, with explicit appr
 
 Kubernetes delete behavior reference:  
 https://kubernetes.io/docs/reference/using-api/api-concepts/#deleting-resources
+
+Phase 2 extends safety guarantees by enforcing the same gate policies
+for events and pod log access, ensuring all observability flows through
+a single deterministic control point.
 
 ### Optional safety
 - `dry_run=true` support for validation without persistence
