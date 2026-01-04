@@ -1,115 +1,263 @@
-# server.py
-from __future__ import annotations
+# import asyncio
+# import sys
+# from typing import Any, Dict, List
+
+# from mcp.server import Server
+# from mcp.server.stdio import stdio_server
+# from mcp.types import Tool, TextContent
+
+# from tools_read import (
+#     k8s_get,
+#     k8s_list,
+#     k8s_list_events,
+#     k8s_pod_logs,
+# )
+# from tools_write import k8s_delete
+
+
+# print("MCP k8s-agent server starting...", file=sys.stderr)
+
+# # ✅ DO NOT pass protocol_version here
+# server = Server(
+#     name="mcp-k8s-agent",
+#     version="0.2.0",
+# )
+
+# # -------------------------
+# # Tool schemas
+# # -------------------------
+
+# PING_SCHEMA: Dict[str, Any] = {"type": "object", "properties": {}}
+
+# K8S_LIST_SCHEMA: Dict[str, Any] = {
+#     "type": "object",
+#     "properties": {
+#         "namespace": {"type": "string"},
+#         "group": {"type": "string"},
+#         "version": {"type": "string"},
+#         "plural": {"type": "string"},
+#         "kind": {"type": "string"},
+#         "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+#     },
+#     "required": ["namespace", "group", "version", "plural"],
+#     "additionalProperties": False,
+# }
+
+# K8S_GET_SCHEMA: Dict[str, Any] = {
+#     "type": "object",
+#     "properties": {
+#         "namespace": {"type": "string"},
+#         "group": {"type": "string"},
+#         "version": {"type": "string"},
+#         "plural": {"type": "string"},
+#         "kind": {"type": "string"},
+#         "name": {"type": "string"},
+#     },
+#     "required": ["namespace", "group", "version", "plural", "name"],
+#     "additionalProperties": False,
+# }
+
+# K8S_EVENTS_SCHEMA: Dict[str, Any] = {
+#     "type": "object",
+#     "properties": {
+#         "namespace": {"type": "string"},
+#         "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+#     },
+#     "required": ["namespace"],
+#     "additionalProperties": False,
+# }
+
+# K8S_POD_LOGS_SCHEMA: Dict[str, Any] = {
+#     "type": "object",
+#     "properties": {
+#         "namespace": {"type": "string"},
+#         "pod": {"type": "string"},
+#         "container": {"type": "string"},
+#         "tail_lines": {"type": "integer", "minimum": 1, "maximum": 5000},
+#     },
+#     "required": ["namespace", "pod"],
+#     "additionalProperties": False,
+# }
+
+# K8S_DELETE_SCHEMA: Dict[str, Any] = {
+#     "type": "object",
+#     "properties": {
+#         "namespace": {"type": "string"},
+#         "group": {"type": "string"},
+#         "version": {"type": "string"},
+#         "plural": {"type": "string"},
+#         "kind": {"type": "string"},
+#         "name": {"type": "string"},
+#         "approved": {"type": "boolean"},
+#         "grace_period_seconds": {"type": "integer", "minimum": 0, "maximum": 3600},
+#         "propagation_policy": {
+#             "type": "string",
+#             "enum": ["Foreground", "Background", "Orphan"],
+#         },
+#     },
+#     "required": ["namespace", "group", "version", "plural", "name", "approved"],
+#     "additionalProperties": False,
+# }
+
+# # -------------------------
+# # Tool registration
+# # -------------------------
+
+# @server.list_tools()
+# async def list_tools() -> List[Tool]:
+#     return [
+#         Tool(name="ping", description="Health check", inputSchema=PING_SCHEMA),
+#         Tool(name="k8s_list", description="List resources", inputSchema=K8S_LIST_SCHEMA),
+#         Tool(name="k8s_get", description="Get resource", inputSchema=K8S_GET_SCHEMA),
+#         Tool(name="k8s_events", description="List events", inputSchema=K8S_EVENTS_SCHEMA),
+#         Tool(name="k8s_pod_logs", description="Read pod logs", inputSchema=K8S_POD_LOGS_SCHEMA),
+#         Tool(name="k8s_delete", description="Delete one resource", inputSchema=K8S_DELETE_SCHEMA),
+#     ]
+
+
+# @server.call_tool()
+# async def call_tool(name: str, arguments: dict):
+#     if name == "ping":
+#         return [TextContent(type="text", text="pong")]
+
+#     if name == "k8s_list":
+#         return [TextContent(type="text", text=await k8s_list(arguments))]
+
+#     if name == "k8s_get":
+#         return [TextContent(type="text", text=await k8s_get(arguments))]
+
+#     if name == "k8s_events":
+#         return [TextContent(type="text", text=await k8s_list_events(arguments))]
+
+#     if name == "k8s_pod_logs":
+#         return [TextContent(type="text", text=await k8s_pod_logs(arguments))]
+
+#     if name == "k8s_delete":
+#         return [TextContent(type="text", text=await k8s_delete(arguments))]
+
+#     raise ValueError(f"Unknown tool: {name}")
+
+
+# async def main():
+#     async with stdio_server() as (read_stream, write_stream):
+#         await server.run(
+#             read_stream=read_stream,
+#             write_stream=write_stream,
+#             initialization_options=server.create_initialization_options(),
+#         )
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
 
 import asyncio
 import sys
 from typing import Any, Dict, List
+from tools_read import k8s_list, k8s_get
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-import tools_read
+from tools_read import (
+    k8s_get,
+    k8s_list,
+    k8s_list_events,
+    k8s_pod_logs,
+)
+from tools_write import k8s_delete
+
 
 print("MCP k8s-agent server starting...", file=sys.stderr)
 
 server = Server(
     name="mcp-k8s-agent",
-    version="0.1.0",
+    version="0.2.0",
 )
 
-def _tool_schema_list_resources() -> Dict[str, Any]:
-    return {
-        "type": "object",
-        "properties": {
-            "namespace": {"type": "string"},
-            "group": {"type": "string"},
-            "version": {"type": "string"},
-            "plural": {"type": "string"},
-            "kind": {"type": ["string", "null"]},
-        },
-        "required": ["namespace", "group", "version", "plural"],
-        "additionalProperties": False,
-    }
-
-def _tool_schema_get_resource() -> Dict[str, Any]:
-    s = _tool_schema_list_resources()
-    s["properties"]["name"] = {"type": "string"}
-    s["required"] = ["namespace", "group", "version", "plural", "name"]
-    return s
-
-
-def _tool_schema_get_resource_status() -> Dict[str, Any]:
-    return _tool_schema_get_resource()
-
-
-def _tool_schema_list_events() -> Dict[str, Any]:
-    return {
-        "type": "object",
-        "properties": {"namespace": {"type": "string"}},
-        "required": ["namespace"],
-        "additionalProperties": False,
-    }
-
-
-def _tool_schema_get_pod_logs() -> Dict[str, Any]:
-    return {
-        "type": "object",
-        "properties": {
-            "namespace": {"type": "string"},
-            "pod_name": {"type": "string"},
-            "container": {"type": ["string", "null"]},
-            "tail_lines": {"type": ["integer", "null"]},
-            "since_seconds": {"type": ["integer", "null"]},
-        },
-        "required": ["namespace", "pod_name"],
-        "additionalProperties": False,
-    }
-
+PING_SCHEMA: Dict[str, Any] = {"type": "object", "properties": {}}
 
 @server.list_tools()
 async def list_tools() -> List[Tool]:
     return [
-        Tool(name="ping", description="Health check", inputSchema={"type": "object", "properties": {}, "additionalProperties": False}),
-        Tool(name="list_resources", description="List resources in a namespace (any kind except forbidden).", inputSchema=_tool_schema_list_resources()),
-        Tool(name="get_resource", description="Get a single resource by name (any kind except forbidden).", inputSchema=_tool_schema_get_resource()),
-        Tool(name="get_resource_status", description="Get status subresource for a resource (if supported).", inputSchema=_tool_schema_get_resource_status()),
-        Tool(name="list_events", description="List events in a namespace.", inputSchema=_tool_schema_list_events()),
-        Tool(name="get_pod_logs", description="Get logs for one pod (namespaced).", inputSchema=_tool_schema_get_pod_logs()),
+        Tool(
+            name="ping",
+            description="Health check",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="k8s_delete",
+            description="Delete exactly one namespaced Kubernetes resource. Requires approved=true.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string"},
+                    "group": {"type": "string"},
+                    "version": {"type": "string"},
+                    "plural": {"type": "string"},
+                    "name": {"type": "string"},
+                    "approved": {"type": "boolean"},
+                },
+                "required": ["namespace", "group", "version", "plural", "name", "approved"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="k8s_list",
+            description="List namespaced Kubernetes resources (read-only)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string"},
+                    "group": {"type": "string"},
+                    "version": {"type": "string"},
+                    "plural": {"type": "string"},
+                },
+                "required": ["namespace", "group", "version", "plural"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="k8s_get",
+            description="Get a single namespaced Kubernetes resource (read-only)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string"},
+                    "group": {"type": "string"},
+                    "version": {"type": "string"},
+                    "plural": {"type": "string"},
+                    "name": {"type": "string"},
+                },
+                "required": ["namespace", "group", "version", "plural", "name"],
+                "additionalProperties": False,
+            },
+        ),
     ]
+
 
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     if name == "ping":
-        return [TextContent(type="text", text="pong - k8s-agent is working!")]
+        return [TextContent(type="text", text="pong")]
 
-    args = arguments or {}
+    if name == "k8s_list":
+        out = await k8s_list(arguments)
+        return [TextContent(type="text", text=out)]
 
-    try:
-        if name == "list_resources":
-            ctype, text = tools_read.list_resources(**args)
-        elif name == "get_resource":
-            ctype, text = tools_read.get_resource(**args)
-        elif name == "get_resource_status":
-            ctype, text = tools_read.get_resource_status(**args)
-        elif name == "list_events":
-            ctype, text = tools_read.list_events(**args)
-        elif name == "get_pod_logs":
-            ctype, text = tools_read.get_pod_logs(**args)
-        else:
-            raise ValueError(f"Unknown tool: {name}")
+    if name == "k8s_get":
+        out = await k8s_get(arguments)
+        return [TextContent(type="text", text=out)]
 
-        # MCP TextContent is plain text; we embed JSON/text as a string.
-        return [TextContent(type="text", text=text)]
+    if name == "k8s_delete":
+        out = await k8s_delete(arguments)
+        return [TextContent(type="text", text=out)]
 
-    except Exception as e:
-        # Deterministic error surface: return a readable string.
-        # (We can tighten error typing later in Phase 4 audit work.)
-        return [TextContent(type="text", text=f"ERROR: {type(e).__name__}: {e}")]
+    raise ValueError(f"Unknown tool: {name}")
 
 
-async def main() -> None:
+
+async def main():
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream=read_stream,
