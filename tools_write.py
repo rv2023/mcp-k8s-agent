@@ -10,6 +10,10 @@ from gate import RequestContext, enforce
 from sanitize import prune_k8s_object
 
 
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
+
 def _load_dynamic() -> DynamicClient:
     # Local kubeconfig only (current project assumption)
     config.load_kube_config()
@@ -22,6 +26,34 @@ def _api_version(group: str, version: str) -> str:
     version = (version or "").strip()
     return version if group == "" else f"{group}/{version}"
 
+
+def _resolve_resource(
+    dyn: DynamicClient,
+    api_version: str,
+    *,
+    kind: str | None,
+    plural: str,
+):
+    """
+    Resolve a dynamic resource safely across kubernetes client versions.
+
+    Priority:
+    1. Use kind if provided
+    2. Fall back to plural name lookup
+    """
+    if kind:
+        return dyn.resources.get(api_version=api_version, kind=kind)
+
+    for r in dyn.resources:
+        if r.api_version == api_version and r.name == plural:
+            return r
+
+    raise ValueError(f"Resource not found: {api_version}/{plural}")
+
+
+# -------------------------------------------------------------------
+# Write tool
+# -------------------------------------------------------------------
 
 async def k8s_delete(arguments: Dict[str, Any]) -> str:
     """
@@ -55,7 +87,6 @@ async def k8s_delete(arguments: Dict[str, Any]) -> str:
     enforce(ctx, arguments=arguments)
 
     if not namespace or not name:
-        # Redundant to gate, but keep deterministic local validation too.
         raise ValueError("namespace and name are required")
 
     if not plural or not version:
@@ -64,7 +95,12 @@ async def k8s_delete(arguments: Dict[str, Any]) -> str:
     dyn = _load_dynamic()
     api_version = _api_version(group, version)
 
-    resource = dyn.resources.get(api_version=api_version, plural=plural)
+    resource = _resolve_resource(
+        dyn,
+        api_version,
+        kind=kind,
+        plural=plural,
+    )
 
     delete_opts = client.V1DeleteOptions()
 
@@ -80,11 +116,8 @@ async def k8s_delete(arguments: Dict[str, Any]) -> str:
             namespace=namespace,
             body=delete_opts,
         )
-        # resp can be dict-like or model object; make it JSON-safe deterministically.
-        if hasattr(resp, "to_dict"):
-            raw = resp.to_dict()
-        else:
-            raw = resp
+
+        raw = resp.to_dict() if hasattr(resp, "to_dict") else resp
 
         out = {
             "request": {
@@ -121,6 +154,10 @@ async def k8s_delete(arguments: Dict[str, Any]) -> str:
                 "status": status,
                 "message": f"kubernetes api error: {e.status}",
             },
-            "raw": {"status": e.status, "reason": e.reason, "body": e.body},
+            "raw": {
+                "status": e.status,
+                "reason": e.reason,
+                "body": e.body,
+            },
         }
         return json.dumps(out, indent=2, sort_keys=True)

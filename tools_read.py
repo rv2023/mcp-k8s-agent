@@ -8,9 +8,11 @@ from kubernetes.dynamic import DynamicClient
 
 from gate import RequestContext, enforce
 from sanitize import prune_k8s_object
-from gate import enforce, RequestContext
 
 
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
 
 def _load_dynamic() -> DynamicClient:
     config.load_kube_config()
@@ -23,6 +25,20 @@ def _api_version(group: str, version: str) -> str:
     version = (version or "").strip()
     return version if group == "" else f"{group}/{version}"
 
+
+def _get_resource(dyn: DynamicClient, api_version: str, plural: str):
+    """
+    Resolve a resource using the supported DynamicClient search API.
+    """
+    for resource in dyn.resources.search(api_version=api_version):
+        if resource.name == plural:
+            return resource
+    raise ValueError(f"Resource not found: {api_version}/{plural}")
+
+
+# -------------------------------------------------------------------
+# Read tools
+# -------------------------------------------------------------------
 
 async def k8s_list(arguments: Dict[str, Any]) -> str:
     namespace = (arguments.get("namespace") or "").strip()
@@ -43,10 +59,13 @@ async def k8s_list(arguments: Dict[str, Any]) -> str:
 
     dyn = _load_dynamic()
     api_version = _api_version(group, version)
-    resource = dyn.resources.get(api_version=api_version, plural=plural)
+    resource = _get_resource(dyn, api_version, plural)
 
     limit = arguments.get("limit")
-    resp = resource.get(namespace=namespace, limit=limit) if limit else resource.get(namespace=namespace)
+    resp = resource.get(
+        namespace=namespace,
+        limit=limit,
+    ) if limit else resource.get(namespace=namespace)
 
     raw = resp.to_dict() if hasattr(resp, "to_dict") else resp
     out = prune_k8s_object(raw if isinstance(raw, dict) else {"value": raw})
@@ -73,7 +92,7 @@ async def k8s_get(arguments: Dict[str, Any]) -> str:
 
     dyn = _load_dynamic()
     api_version = _api_version(group, version)
-    resource = dyn.resources.get(api_version=api_version, plural=plural)
+    resource = _get_resource(dyn, api_version, plural)
 
     resp = resource.get(name=name, namespace=namespace)
     raw = resp.to_dict() if hasattr(resp, "to_dict") else resp
@@ -81,7 +100,7 @@ async def k8s_get(arguments: Dict[str, Any]) -> str:
     return json.dumps(out, indent=2, sort_keys=True)
 
 
-async def k8s_list_events(arguments: dict) -> str:
+async def k8s_list_events(arguments: Dict[str, Any]) -> str:
     namespace = arguments["namespace"]
 
     ctx = RequestContext(
@@ -92,10 +111,8 @@ async def k8s_list_events(arguments: dict) -> str:
         name=None,
         approved=False,
     )
-
     enforce(ctx, arguments)
 
-    # --- existing logic below ---
     v1 = client.CoreV1Api()
     events = v1.list_namespaced_event(
         namespace=namespace,
@@ -104,7 +121,8 @@ async def k8s_list_events(arguments: dict) -> str:
 
     return json.dumps(events.to_dict(), indent=2)
 
-async def k8s_pod_logs(arguments: dict) -> str:
+
+async def k8s_pod_logs(arguments: Dict[str, Any]) -> str:
     namespace = arguments["namespace"]
     pod = arguments["pod"]
 
@@ -116,10 +134,8 @@ async def k8s_pod_logs(arguments: dict) -> str:
         name=pod,
         approved=False,
     )
-
     enforce(ctx, arguments)
 
-    # --- existing logic below ---
     v1 = client.CoreV1Api()
     logs = v1.read_namespaced_pod_log(
         name=pod,
