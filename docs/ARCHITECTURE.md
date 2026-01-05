@@ -1,356 +1,176 @@
 # mcp-k8s-agent — Architecture
 
-This document defines the **final architecture and phased design** of `mcp-k8s-agent`.
-
-It is frozen as the authoritative reference for:
-- safety guarantees
-- phase boundaries
-- allowed and forbidden behavior
-- long-term design intent
-
-No implementation details in this document override `gate.py`.
+This document describes the **actual, authoritative architecture** of the `mcp-k8s-agent` as implemented in the current codebase.  
+It focuses on components, safety rules, enforcement boundaries, and design guarantees.
 
 ---
 
-## Project Summary
+## 🧠 Overview
 
-`mcp-k8s-agent` is a **Model Context Protocol (MCP) server** that exposes Kubernetes capabilities safely to AI clients (Cursor, Claude Desktop, etc.).
+`mcp-k8s-agent` is a **Model Context Protocol (MCP) server** that safely exposes a limited set of Kubernetes capabilities to MCP clients over a JSON-RPC/stdio transport.  
+The server allows **namespaced reads and controlled deletes** while enforcing strict safety policies in code.
 
-Core design principles:
-
-- Safety enforced in **code**, not prompts
-- Read-only by default
-- No access to Secrets or ConfigMaps
-- No cluster-wide operations
-- No bulk actions
-- No mutations without explicit approval
-- Deterministic and auditable behavior
+MCP is a standard protocol that defines how clients (e.g., AI agents like Claude Desktop) interact with servers that expose *tools* that perform actions or retrieve contextual data. MCP uses JSON-RPC 2.0 over stdio in this project. :contentReference[oaicite:0]{index=0}
 
 ---
 
-## Hard Safety Rules (Global)
+## 🛠️ Core Components
 
-These rules apply to **all phases** and **all tools**:
+### 🧩 Transport
 
-1. `gate.py` is the final authority for allow/deny
-2. Forbidden kinds are **never accessible** (read, delete, write)
-   - Current forbidden list includes:
-     - `Secret`
-     - `ConfigMap`
-3. Every tool call **must include `namespace`**
-4. No cluster-wide reads or writes
-5. No bulk operations (no selectors, no collections)
-6. No implicit approvals
-7. Any mutation requires `approved=true`
-8. One tool call maps to **one Kubernetes API action**
-9. Safety decisions are deterministic
+- The MCP server runs an **stdio JSON-RPC transport**.
+- Clients connect via standard input/output streams.
+- MCP clients must perform the **initialize** handshake before invoking tools.
 
-Kubernetes API reference:  
-https://kubernetes.io/docs/reference/kubernetes-api/
+### 🧠 Protocol Handler
 
-### Central Safety Gate (gate.py)
+- `server.py` sets up MCP tool discovery and call dispatch.
+- It maps tool names (like `k8s_list`, `k8s_get`, `k8s_delete`) to handler functions.
+- Responses are returned via `TextContent` to ensure correct MCP typing.
 
-All Kubernetes access — including reads, events, and logs — is enforced through
-a single policy gate implemented in `gate.py`.
+### 🛡️ Central Safety Gate
 
-Every tool call constructs a `RequestContext` and must pass `enforce()` **before**
-any Kubernetes API interaction occurs.
+- All policy decisions are centralized in `gate.py`.
+- The gate enforces:
+  - allowed verbs (`list`, `get`, `events`, `pod_logs`, `delete`)
+  - scope requirements
+  - forbidden kinds and endpoints
+  - approval requirements for mutations
 
-This includes:
-- standard read operations (`get`, `list`)
-- event retrieval
-- pod log access
-- delete operations (Phase 2)
-
-There are no exceptions or bypass paths.
----
-
-#### Logs and Events
-
-The agent supports Kubernetes-native observability only:
-
-- Namespace-scoped events
-- Pod stdout/stderr logs via the Kubernetes API
-
-Constraints:
-- Pod logs require explicit `namespace` and `pod` name
-- Logs are available in all namespaces, including `kube-system`
-- Node OS logs, kubelet logs, and host-level logs are **not accessible**
-- No cloud provider logs (e.g., CloudWatch / CloudTrail)
-
-All log and event access is routed through the central safety gate.
-
-### Explicit Non-Goals
-
-The following are intentional non-goals of this system:
-
-- Accessing Secrets or ConfigMaps
-- Executing commands inside pods
-- Reading node or host OS logs
-- SSH / SSM access to nodes
-- Accessing cloud provider logs
-- Cluster-wide scraping or bulk operations
-- Multi-object fan-out behind a single tool
-
-These are architectural decisions, not missing features.
-
-
-
-## Phase 0 — Current State (Completed)
-
-### What exists today
-- MCP server wiring (`server.py`)
-- Central safety gate (`gate.py`)
-- Forbidden kind enforcement
-- Namespace enforcement
-- Write blocking unless approved
-- Tool registration infrastructure
-
-### What is intentionally missing
-- Kubernetes Python client
-- Read tools
-- Delete tools
-- Write tools
-- Audit logging
-- In-cluster execution
-
-This phase proves **control before capability**.
+This gate is called **before any Kubernetes API interaction**. It is the single source of truth for allow/deny decisions.
 
 ---
 
-## Phase 1 — Read-Only Access  
-**(Any resource except forbidden list)**
+## 📏 Safety Guarantees
 
-### Goal
-Allow safe, namespaced, read-only access to **any Kubernetes resource**, including CRDs, except forbidden kinds.
+The entire system enforces the following global rules:
 
-### Capabilities added
-- Read operations:
-  - list
-  - get
-  - events
-  - logs (scoped, namespaced)
-- Works for:
-  - Core resources
-  - Grouped resources
-  - CRDs
+### 🧱 Hard Safety Rules
 
-### Hard limits
-- No access to `Secret` or `ConfigMap`
-- No cluster-scoped reads
-- No cross-namespace reads
-- No bulk scraping
-- No selector-based reads
+1. **Safety is enforced in code**, not in prompts.
+2. **Forbidden kinds** (like `Secret` and `ConfigMap`) can never be read, listed, or deleted.
+3. **All tools require a namespace**; no cluster-wide read or write.
+4. **No bulk operations** — no selectors, no multiple object deletes.
+5. **Mutations require explicit approval** (`approved=true`) and return denial text if absent.
+6. **One MCP tool call maps to exactly one Kubernetes API call**.
+7. **Policy denials return text, not internal errors**.
 
-### Why this phase exists
-- Enables troubleshooting and visibility
-- Zero mutation risk
-- Builds trust in the safety model
-
-Kubernetes API structure reference:  
-https://kubernetes.io/docs/reference/using-api/api-concepts/
+These rules are enforced before any Kubernetes API call is allowed. They do not rely on prompts or heuristics.
 
 ---
 
-## Phase 2 — Delete-Only Mutations  
-**(Any resource except forbidden list)**
+## 📦 Tool Surface (Current)
 
-### Goal
-Allow deletion of **exactly one Kubernetes object per call**, with explicit approval.
+The MCP server exposes these tools:
 
-### Capabilities added
-- Delete a single resource instance
-- Works for:
-  - Built-in resources
-  - CRDs
+| Name             | Description                                                        |
+|------------------|--------------------------------------------------------------------|
+| `k8s_list`       | List namespaced Kubernetes resources (read-only)                   |
+| `k8s_get`        | Get a single Kubernetes object by name                             |
+| `k8s_list_events`| List events in a namespace                                          |
+| `k8s_pod_logs`   | Read logs from a named pod                                         |
+| `k8s_delete`     | Delete a single resource (requires `approved=true`)                 |
 
-### Required inputs
-- `namespace`
-- `name`
-- `group`
-- `version`
-- `plural`
-- `approved=true`
+Each tool:
+- accepts a JSON schema-validated input
+- is enforced by the policy gate
+- returns structured text output
 
-### Explicitly forbidden
-- No delete-by-label
-- No delete-collection
-- No wildcards
-- No cross-namespace deletes
-- No force delete
-- No cascading mode toggles exposed
-
-Kubernetes delete behavior reference:  
-https://kubernetes.io/docs/reference/using-api/api-concepts/#deleting-resources
-
-Phase 2 extends safety guarantees by enforcing the same gate policies
-for events and pod log access, ensuring all observability flows through
-a single deterministic control point.
-
-### Optional safety
-- `dry_run=true` support for validation without persistence
-
-Dry-run reference:  
-https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run
-
-### Why this phase exists
-Deletes are common but dangerous.  
-This phase enforces:
-- explicit identity
-- explicit approval
-- zero blast-radius amplification
+There is **no exec into pods**, no watch streams, and no cluster-wide operations.
 
 ---
 
-### Resource Resolution (Authoritative)
+## 📁 Kubernetes API Access
 
-All Kubernetes resources (built-ins and CRDs) are resolved dynamically
-using Kubernetes API discovery via the DynamicClient.
+- The implementation uses the **Kubernetes Python client** via `DynamicClient`.
+- Resource resolution is dynamic — **no hardcoded resource lists**.
+- Tools rely on API discovery to resolve `group/version/plural` to a Kubernetes resource.
+- All pod logs and events also use official Kubernetes API calls.
 
-The system does NOT rely on hardcoded Kind or plural mappings.
-This guarantees compatibility with:
-- CustomResourceDefinitions (CRDs)
-- future Kubernetes API versions
-- cluster-specific extensions
-
-
-## Phase 3 — Controlled Writes  
-**(Any resource except forbidden list)**
-
-### Goal
-Allow controlled creation and modification of **one Kubernetes object at a time**, with approval.
-
-### Capabilities added
-- Create one resource
-- Update one resource
-- Patch one resource
-- Works for:
-  - Core resources
-  - Grouped resources
-  - CRDs
-
-### Required inputs
-- `namespace`
-- `group`
-- `version`
-- `plural`
-- `approved=true`
-- Object payload (`body`)
-
-### Safety constraints
-- One object per call
-- No bulk apply
-- No directory apply
-- No selector-based writes
-- Payload size limits enforced
-- Gate enforced before execution
-
-### Intentionally missing
-- Server-side apply (SSA)
-- Namespace creation
-- RBAC changes
-- CRD creation
-- Webhooks
-
-Apply vs patch reference:  
-https://kubernetes.io/docs/reference/using-api/server-side-apply/
-
-### Why this phase exists
-Writes can:
-- spawn controllers
-- alter security posture
-- cause indirect fan-out
-
-This phase keeps writes:
-- explicit
-- bounded
-- auditable
+These calls are executed only after successful policy enforcement.
 
 ---
 
-## Phase 4 — Audit and Traceability
+## 📌 Observability & Errors
 
-### Goal
-Make **every action observable and reviewable**.
+- Tool errors (including safety denials) are returned as **text content**, not protocol errors.
+- Internal server errors (unexpected exceptions) also return text content describing the failure.
+- No stack traces or uncaught exceptions are exposed via MCP.
 
-### Capabilities added
-- Structured audit records including:
-  - tool name
-  - timestamp
-  - namespace
-  - resource identity
-  - approved flag
-  - allow/deny decision
-
-### Non-goals
-- No behavior inference
-- No auto-remediation
-- No policy learning
-
-### Why this phase exists
-AI access to Kubernetes requires:
-- accountability
-- forensic visibility
-- compliance readiness
+This helps ensure MCP clients see a consistent, safe contract.
 
 ---
 
-## Phase 5 — In-Cluster Execution (Optional)
+## ❌ Explicit Non-Goals
 
-### Goal
-Support running the MCP server **inside a Kubernetes cluster**.
+These are **by design**, not missing features:
 
-### Capabilities added
-- In-cluster authentication
-- Same tool surface
-- Same gate enforcement
-- Same forbidden list
+- Reading **Secrets** or **ConfigMaps**
+- Cluster-wide listing or deletion
+- Selector-based bulk operations
+- In-cluster execution of the MCP server
+- Exec / port-forward / node OS logs
+- Inference of intent or auto-approval from prompts
 
-Config loading reference:  
-https://github.com/kubernetes-client/python/blob/master/examples/in_cluster_config.py
-
-### Why separate
-In-cluster execution increases blast radius and must remain explicit.
+These limitations simplify the safety boundary and reduce blast radius.
 
 ---
 
-## Final System Guarantees
+## 🕊 Design Principles
 
-When all phases are complete, the system guarantees:
+1. **Fail-closed defaults**
+   - If the safety gate cannot decide, the operation is blocked.
 
-- No access to forbidden kinds
-- No cluster-wide actions
-- No bulk operations
-- No hidden side effects
-- No implicit approvals
-- No prompt-based safety
-- Deterministic behavior
-- One tool call = one Kubernetes API action
-- Full auditability
+2. **One tool, one action**
+   - Simplifies auditing, reasoning, and approval semantics.
 
----
+3. **Deterministic control**
+   - No heuristics, no pattern matching, no ML in policy.
 
-## Explicit Refusals (By Design)
+4. **Explicit approvals**
+   - Any mutation must be clearly approved (`approved=true`).
 
-The system will **never**:
+5. **Auditable text**
+   - All denials articulate reason and requirements for success.
 
-- Read Secrets or ConfigMaps
-- Exec into pods
-- Port-forward
-- Modify RBAC
-- Apply directories
-- Infer intent
-- Auto-approve actions
-- Execute multi-step plans
-- Act outside declared MCP tools
+6. **Gate is authoritative**
+   - No code path bypasses the policy gate.
 
 ---
 
-## Status
+## 🧩 Deployment
 
-This document is **frozen**.
+This server is intended to run as a **local access point for MCP clients** (like Claude Desktop or other agents).  
+Production deployment may involve containerization and process supervision, but those concerns are outside the scope of this project.
 
-Any changes require:
-- an explicit phase proposal
-- a documented safety justification
-- no silent expansion of capabilities
+---
+
+## 📌 MCP Protocol Primitives
+
+MCP defines:
+
+- **Tools** — invocable commands
+- **Resources** — contextual data sources
+- **Prompts** — structured templates for model interaction
+
+This agent implements only the **Tools** primitive in a minimal set. :contentReference[oaicite:1]{index=1}
+
+---
+
+## 🧪 Status
+
+This architecture describes the **current system** as implemented — not an aspirational future.  
+Phase planning beyond this (like controlled writes, audit logging, in-cluster execution) belongs in future documentation, not here.
+
+---
+
+## 📌 Summary
+
+`mcp-k8s-agent` is a **safe, policy-first MCP server** for Kubernetes clusters that:
+
+- Exposes a limited, deterministic set of Kubernetes operations
+- Makes safety decisions in code
+- Never exposes dangerous operations
+- Returns structured text for all outcomes
+
+This architecture is **the contract** — the code must always conform to it.

@@ -1,12 +1,25 @@
 [project]
 name = "mcp-k8s-agent"
-version = "0.1.0"
-description = "MCP server that exposes safe Kubernetes read/write tools (Phase 1: read-only)"
+version = "0.2.0"
+description = "MCP server exposing safe, policy-gated Kubernetes operations (read + approved delete)"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+
 dependencies = [
-  "mcp",
+  "mcp>=1.25.0",
   "kubernetes>=29.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/rv2023/mcp-k8s-agent"
+Repository = "https://github.com/rv2023/mcp-k8s-agent"
+
 [tool.setuptools]
-py-modules = ["server", "gate", "tools_read", "tools_write", "sanitize"]
+py-modules = [
+  "server",
+  "gate",
+  "tools_read",
+  "tools_write",
+  "sanitize",
+]
