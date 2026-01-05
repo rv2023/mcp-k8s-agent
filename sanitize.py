@@ -1,26 +1,17 @@
-# sanitize.py
-from __future__ import annotations
-
 from typing import Any, Dict
 
 
 def prune_k8s_object(obj: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Keep responses readable and reduce noise.
-    Deterministic, no "smart" behavior.
-
-    We intentionally remove:
-    - managedFields (very large)
+    Deterministic pruning only.
+    Removes noisy / non-essential fields.
     """
+
     if not isinstance(obj, dict):
-        return {"value": obj}
+        return obj
 
-    out = dict(obj)
+    meta = obj.get("metadata")
+    if isinstance(meta, dict):
+        meta.pop("managedFields", None)
 
-    md = out.get("metadata")
-    if isinstance(md, dict) and "managedFields" in md:
-        md = dict(md)
-        md.pop("managedFields", None)
-        out["metadata"] = md
-
-    return out
+    return obj

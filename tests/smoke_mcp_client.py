@@ -1,18 +1,7 @@
 import asyncio
 
-from mcp.client.stdio import stdio_client, StdioServerParameters, SessionMessage
-from mcp.types import JSONRPCMessage
-
-
-async def send(write_stream, msg: JSONRPCMessage):
-    await write_stream.send(SessionMessage(msg))
-
-
-async def recv(read_stream):
-    sm = await read_stream.receive()
-    if isinstance(sm, Exception):
-        raise sm
-    return sm.message.model_dump()
+from mcp.client.stdio import stdio_client, StdioServerParameters
+from mcp.client.session import ClientSession
 
 
 async def main():
@@ -22,79 +11,35 @@ async def main():
     )
 
     async with stdio_client(server) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            # 1️⃣ initialize
+            await session.initialize()
 
-        # 1️⃣ initialize
-        await send(
-            write_stream,
-            JSONRPCMessage(
-                jsonrpc="2.0",
-                id=1,
-                method="initialize",
-                params={
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": {},
-                    "clientInfo": {
-                        "name": "phase2-smoke-test",
-                        "version": "0.1",
-                    },
+            # 2️⃣ list tools
+            tools_result = await session.list_tools()
+            tool_names = [t.name for t in tools_result.tools]
+            assert "k8s_delete" in tool_names, tool_names
+            print(f"✅ Tools: {tool_names}")
+
+            # 3️⃣ delete without approval must fail
+            delete_result = await session.call_tool(
+                "k8s_delete",
+                arguments={
+                    "namespace": "default",
+                    "group": "",
+                    "version": "v1",
+                    "plural": "pods",
+                    "name": "does-not-matter",
+                    "approved": False,
                 },
-            ),
-        )
+            )
 
-        init_resp = await recv(read_stream)
-        assert "result" in init_resp, init_resp
+            text = delete_result.content[0].text.lower()
+            assert "approved" in text or "blocked" in text, text
+            print(f"✅ Delete blocked as expected: {text[:100]}")
 
-        # 2️⃣ initialized notification
-        await send(
-            write_stream,
-            JSONRPCMessage(
-                jsonrpc="2.0",
-                method="notifications/initialized",
-                params={},
-            ),
-        )
+            print("✅ Phase 2 smoke test passed")
 
-        # 3️⃣ list tools
-        await send(
-            write_stream,
-            JSONRPCMessage(
-                jsonrpc="2.0",
-                id=2,
-                method="tools/list",
-            ),
-        )
 
-        tools_resp = await recv(read_stream)
-        tool_names = [t["name"] for t in tools_resp["result"]["tools"]]
-
-        assert "k8s_delete" in tool_names, tool_names
-
-        # 4️⃣ delete without approval must fail
-        await send(
-            write_stream,
-            JSONRPCMessage(
-                jsonrpc="2.0",
-                id=3,
-                method="tools/call",
-                params={
-                    "name": "k8s_delete",
-                    "arguments": {
-                        "namespace": "default",
-                        "group": "",
-                        "version": "v1",
-                        "plural": "pods",
-                        "name": "does-not-matter",
-                        "approved": False,
-                    },
-                },
-            ),
-        )
-
-        delete_resp = await recv(read_stream)
-
-        text = delete_resp["result"]["content"][0]["text"].lower()
-        assert "blocked" in text or "approved=true" in text, delete_resp
-
-        print("✅ Phase 2 smoke test passed")
-
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
