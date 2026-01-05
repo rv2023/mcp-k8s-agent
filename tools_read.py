@@ -1,63 +1,11 @@
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from kubernetes import client, config
-from kubernetes.dynamic import DynamicClient
 
 from gate import RequestContext, enforce
-
-
-def _get_resource(dyn: DynamicClient, api_version: str, plural: str):
-    """
-    Get resource using API discovery.
-    Works with kubernetes client v34.1.0+
-    """
-    # Try searching available resources
-    try:
-        for resource in dyn.resources.search(api_version=api_version):
-            if resource.name == plural:
-                return resource
-    except Exception:
-        pass
-
-    # Fallback: use kind lookup
-    PLURAL_TO_KIND = {
-        "pods": "Pod",
-        "services": "Service",
-        "deployments": "Deployment",
-        "replicasets": "ReplicaSet",
-        "daemonsets": "DaemonSet",
-        "statefulsets": "StatefulSet",
-        "configmaps": "ConfigMap",
-        "secrets": "Secret",
-        "serviceaccounts": "ServiceAccount",
-        "namespaces": "Namespace",
-        "nodes": "Node",
-        "persistentvolumes": "PersistentVolume",
-        "persistentvolumeclaims": "PersistentVolumeClaim",
-        "events": "Event",
-        "ingresses": "Ingress",
-        "jobs": "Job",
-        "cronjobs": "CronJob",
-        "roles": "Role",
-        "rolebindings": "RoleBinding",
-        "clusterroles": "ClusterRole",
-        "clusterrolebindings": "ClusterRoleBinding",
-        "networkpolicies": "NetworkPolicy",
-        "leases": "Lease",
-        "horizontalpodautoscalers": "HorizontalPodAutoscaler",
-        "poddisruptionbudgets": "PodDisruptionBudget",
-        "resourcequotas": "ResourceQuota",
-        "limitranges": "LimitRange",
-        "endpoints": "Endpoints",
-        "endpointslices": "EndpointSlice",
-    }
-
-    kind = PLURAL_TO_KIND.get(plural.lower())
-    if kind:
-        return dyn.resources.get(api_version=api_version, kind=kind)
-
-    raise ValueError(f"Cannot resolve resource for plural='{plural}' api_version='{api_version}'")
+from sanitize import prune_k8s_object
+from k8s_resource import load_dynamic_client, api_version_of, get_resource
 
 
 async def k8s_list(arguments: Dict[str, Any]) -> str:
@@ -75,13 +23,18 @@ async def k8s_list(arguments: Dict[str, Any]) -> str:
     )
     enforce(ctx)
 
-    config.load_kube_config()
-    dyn = DynamicClient(client.ApiClient())
-
-    api_version = f"{group}/{version}" if group else version
-    resource = _get_resource(dyn, api_version, plural)
+    dyn = load_dynamic_client()
+    api_version = api_version_of(group, version)
+    resource = get_resource(dyn, api_version, plural)
 
     items = resource.get(namespace=namespace).to_dict()
+
+    # Structural pruning only on object-shaped outputs
+    if isinstance(items, dict) and isinstance(items.get("items"), list):
+        pruned = dict(items)
+        pruned["items"] = [prune_k8s_object(i) for i in items["items"]]
+        items = pruned
+
     return json.dumps(items, indent=2, sort_keys=True)
 
 
@@ -102,13 +55,15 @@ async def k8s_get(arguments: Dict[str, Any]) -> str:
     )
     enforce(ctx)
 
-    config.load_kube_config()
-    dyn = DynamicClient(client.ApiClient())
-
-    api_version = f"{group}/{version}" if group else version
-    resource = _get_resource(dyn, api_version, plural)
+    dyn = load_dynamic_client()
+    api_version = api_version_of(group, version)
+    resource = get_resource(dyn, api_version, plural)
 
     obj = resource.get(name=name, namespace=namespace).to_dict()
+
+    # Structural pruning only on object-shaped outputs
+    obj = prune_k8s_object(obj)
+
     return json.dumps(obj, indent=2, sort_keys=True)
 
 
@@ -125,7 +80,6 @@ async def k8s_list_events(arguments: Dict[str, Any]) -> str:
 
     config.load_kube_config()
     v1 = client.CoreV1Api()
-
     events = v1.list_namespaced_event(namespace=namespace).to_dict()
     return json.dumps(events, indent=2, sort_keys=True)
 
@@ -146,7 +100,6 @@ async def k8s_pod_logs(arguments: Dict[str, Any]) -> str:
 
     config.load_kube_config()
     v1 = client.CoreV1Api()
-
     logs = v1.read_namespaced_pod_log(
         name=pod,
         namespace=namespace,

@@ -7,7 +7,6 @@ from typing import Optional, Mapping, Any
 # -----------------------------
 # Hard forbidden resources
 # -----------------------------
-
 FORBIDDEN_KINDS = {
     "secret",
     "configmap",
@@ -21,9 +20,25 @@ FORBIDDEN_PLURALS = {
 
 
 # -----------------------------
+# Patch policy (Phase 4)
+# -----------------------------
+PATCH_ACTIONS = {"scale", "update_image", "rollout_restart"}
+
+# Restrict patch to known workload built-ins only (v1)
+PATCH_ALLOWED_PLURALS_BY_ACTION = {
+    "scale": {"deployments", "statefulsets"},
+    "update_image": {"deployments", "statefulsets", "daemonsets"},
+    "rollout_restart": {"deployments", "statefulsets", "daemonsets"},
+}
+
+# replicas safety bound (v1)
+SCALE_MIN_REPLICAS = 0
+SCALE_MAX_REPLICAS = 100
+
+
+# -----------------------------
 # Exceptions
 # -----------------------------
-
 class GateError(Exception):
     pass
 
@@ -44,10 +59,13 @@ class BulkOperationBlocked(GateError):
     pass
 
 
+class InvalidPatchIntent(GateError):
+    pass
+
+
 # -----------------------------
 # Request Context
 # -----------------------------
-
 @dataclass(frozen=True)
 class RequestContext:
     tool_name: str
@@ -62,7 +80,6 @@ class RequestContext:
 # -----------------------------
 # Normalizers
 # -----------------------------
-
 def _norm(val: Optional[str]) -> Optional[str]:
     return val.lower().strip() if val else None
 
@@ -70,7 +87,6 @@ def _norm(val: Optional[str]) -> Optional[str]:
 # -----------------------------
 # Validators
 # -----------------------------
-
 def validate_allowed_action(ctx: RequestContext) -> None:
     # All actions are explicitly enumerated by tools
     if not ctx.verb:
@@ -104,15 +120,15 @@ def validate_scope(ctx: RequestContext) -> None:
             raise MissingScope("EVENTS requires a namespace")
         return
 
-    # get / delete / logs → object scoped
-    if verb in {"get", "delete", "pod_logs"}:
+    # get / delete / logs / patch → object scoped
+    if verb in {"get", "delete", "pod_logs", "patch"}:
         if not ctx.namespace or not ctx.name:
             raise MissingScope(f"{verb.upper()} requires namespace and name")
         return
 
 
 def require_approval_if_write(ctx: RequestContext) -> None:
-    if ctx.verb in {"delete"} and not ctx.approved:
+    if ctx.verb in {"delete", "patch"} and not ctx.approved:
         raise ApprovalRequired("Mutation requires approved=true")
 
 
@@ -129,16 +145,71 @@ def block_bulk_args(arguments: Mapping[str, Any]) -> None:
             raise BulkOperationBlocked(f"Bulk operation via '{key}' is not allowed")
 
 
+def _require_str(arguments: Mapping[str, Any], key: str) -> str:
+    val = arguments.get(key)
+    if not isinstance(val, str) or not val.strip():
+        raise InvalidPatchIntent(f"PATCH requires non-empty '{key}'")
+    return val.strip()
+
+
+def _require_int(arguments: Mapping[str, Any], key: str) -> int:
+    val = arguments.get(key)
+    if not isinstance(val, int):
+        raise InvalidPatchIntent(f"PATCH requires integer '{key}'")
+    return val
+
+
+def validate_patch_intent(ctx: RequestContext) -> None:
+    """
+    Validate Phase 4 intent-only patch input.
+    No raw patch payloads are accepted.
+    """
+    if not ctx.arguments:
+        raise InvalidPatchIntent("PATCH missing arguments")
+
+    args = ctx.arguments
+
+    action = args.get("action")
+    if not isinstance(action, str) or action not in PATCH_ACTIONS:
+        raise InvalidPatchIntent("PATCH requires action in {scale, update_image, rollout_restart}")
+
+    plural = args.get("plural")
+    if not isinstance(plural, str) or not plural.strip():
+        raise InvalidPatchIntent("PATCH requires 'plural'")
+    plural_n = plural.strip().lower()
+
+    allowed_plurals = PATCH_ALLOWED_PLURALS_BY_ACTION[action]
+    if plural_n not in allowed_plurals:
+        raise InvalidPatchIntent(f"PATCH action '{action}' not allowed for plural '{plural}'")
+
+    # Enforce explainability: required params per action
+    if action == "scale":
+        replicas = _require_int(args, "replicas")
+        if replicas < SCALE_MIN_REPLICAS or replicas > SCALE_MAX_REPLICAS:
+            raise InvalidPatchIntent(f"PATCH scale replicas must be between {SCALE_MIN_REPLICAS} and {SCALE_MAX_REPLICAS}")
+
+    elif action == "update_image":
+        _require_str(args, "container")
+        _require_str(args, "image")
+
+    elif action == "rollout_restart":
+        # optional "reason" allowed, but must be small if present
+        reason = args.get("reason")
+        if reason is not None:
+            if not isinstance(reason, str):
+                raise InvalidPatchIntent("PATCH reason must be a string")
+            if len(reason) > 200:
+                raise InvalidPatchIntent("PATCH reason too long (max 200 chars)")
+
+
 # -----------------------------
 # Single Enforcement Entry
 # -----------------------------
-
 def enforce(ctx: RequestContext) -> None:
     """
     Single fail-closed enforcement point.
     Called exactly once per tool invocation.
     """
-
     validate_allowed_action(ctx)
 
     # Hard blocks
@@ -153,3 +224,7 @@ def enforce(ctx: RequestContext) -> None:
     # Bulk protections
     if ctx.arguments:
         block_bulk_args(ctx.arguments)
+
+    # Patch-specific policy
+    if ctx.verb == "patch":
+        validate_patch_intent(ctx)
