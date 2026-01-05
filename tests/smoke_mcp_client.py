@@ -11,9 +11,13 @@ async def main():
     )
 
     async with stdio_client(server) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
+        async with ClientSession(
+            read_stream, 
+            write_stream,
+        ) as session:
             # 1️⃣ initialize
-            await session.initialize()
+            result = await session.initialize()
+            print(f"✅ Initialized: {result.serverInfo}")
 
             # 2️⃣ list tools
             tools_result = await session.list_tools()
@@ -38,7 +42,7 @@ async def main():
             assert "approved" in text or "blocked" in text, text
             print(f"✅ Delete blocked as expected: {text[:100]}")
 
-            print("✅ Phase 2 smoke test passed")
+            print("✅ Smoke test passed")
 
 
 if __name__ == "__main__":

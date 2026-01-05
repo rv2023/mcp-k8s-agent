@@ -1,7 +1,6 @@
 from typing import List
-import sys
 
-from mcp.server import Server
+from mcp.server import Server, InitializationOptions
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
@@ -12,6 +11,7 @@ from tools_read import (
     k8s_pod_logs,
 )
 from tools_write import k8s_delete
+from gate import GateError
 
 
 server = Server("mcp-k8s-agent")
@@ -82,7 +82,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="k8s_delete",
-            description="Delete a single namespaced Kubernetes resource (approval required)",
+            description="Delete exactly one namespaced Kubernetes resource. Requires approved=true.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -108,36 +108,55 @@ async def list_tools() -> List[Tool]:
     ]
 
 
+async def _safe_call(coro):
+    """Wrap tool calls to catch GateError and return as text."""
+    try:
+        return await coro
+    except GateError as e:
+        return f"BLOCKED: {e}"
+    except Exception as e:
+        return f"ERROR: {type(e).__name__}: {e}"
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     if name == "k8s_list":
-        return [TextContent(type="text", text=await k8s_list(arguments))]
+        result = await _safe_call(k8s_list(arguments))
+        return [TextContent(type="text", text=result)]
 
     if name == "k8s_get":
-        return [TextContent(type="text", text=await k8s_get(arguments))]
+        result = await _safe_call(k8s_get(arguments))
+        return [TextContent(type="text", text=result)]
 
     if name == "k8s_list_events":
-        return [TextContent(type="text", text=await k8s_list_events(arguments))]
+        result = await _safe_call(k8s_list_events(arguments))
+        return [TextContent(type="text", text=result)]
 
     if name == "k8s_pod_logs":
-        return [TextContent(type="text", text=await k8s_pod_logs(arguments))]
+        result = await _safe_call(k8s_pod_logs(arguments))
+        return [TextContent(type="text", text=result)]
 
     if name == "k8s_delete":
-        return [TextContent(type="text", text=await k8s_delete(arguments))]
+        result = await _safe_call(k8s_delete(arguments))
+        return [TextContent(type="text", text=result)]
 
     raise ValueError(f"Unknown tool: {name}")
 
 
 if __name__ == "__main__":
     import asyncio
-    from mcp.server.stdio import stdio_server
+    from mcp.types import ServerCapabilities
 
     async def main():
         async with stdio_server() as (read_stream, write_stream):
             await server.run(
                 read_stream=read_stream,
                 write_stream=write_stream,
-                initialization_options={},
+                initialization_options=InitializationOptions(
+                    server_name="mcp-k8s-agent",
+                    server_version="0.1.0",
+                    capabilities=ServerCapabilities(tools={}),
+                ),
             )
 
     asyncio.run(main())
