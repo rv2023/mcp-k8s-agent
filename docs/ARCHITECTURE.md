@@ -1,176 +1,185 @@
-# mcp-k8s-agent — Architecture
+Got it. I’ll **replace both files cleanly**, aligned to the **actual Phase 3 code truth**, with **no legacy Phase 1/2 confusion**, no assumptions, and no fluff.
 
-This document describes the **actual, authoritative architecture** of the `mcp-k8s-agent` as implemented in the current codebase.  
-It focuses on components, safety rules, enforcement boundaries, and design guarantees.
-
----
-
-## 🧠 Overview
-
-`mcp-k8s-agent` is a **Model Context Protocol (MCP) server** that safely exposes a limited set of Kubernetes capabilities to MCP clients over a JSON-RPC/stdio transport.  
-The server allows **namespaced reads and controlled deletes** while enforcing strict safety policies in code.
-
-MCP is a standard protocol that defines how clients (e.g., AI agents like Claude Desktop) interact with servers that expose *tools* that perform actions or retrieve contextual data. MCP uses JSON-RPC 2.0 over stdio in this project. :contentReference[oaicite:0]{index=0}
+Below are **copy-paste ready replacements**.
 
 ---
 
-## 🛠️ Core Components
+# ✅ UPDATED `docs/ARCHITECTURE.md`
 
-### 🧩 Transport
+```md
+# Architecture — mcp-k8s-agent (Phase 3)
 
-- The MCP server runs an **stdio JSON-RPC transport**.
-- Clients connect via standard input/output streams.
-- MCP clients must perform the **initialize** handshake before invoking tools.
+## Overview
 
-### 🧠 Protocol Handler
+`mcp-k8s-agent` is a **Model Context Protocol (MCP) stdio server** that exposes a **strictly controlled subset of Kubernetes operations** to AI clients.
 
-- `server.py` sets up MCP tool discovery and call dispatch.
-- It maps tool names (like `k8s_list`, `k8s_get`, `k8s_delete`) to handler functions.
-- Responses are returned via `TextContent` to ensure correct MCP typing.
+The system is intentionally designed to be:
 
-### 🛡️ Central Safety Gate
+- Deterministic
+- Auditable
+- Fail-closed
+- Safe-by-construction
 
-- All policy decisions are centralized in `gate.py`.
-- The gate enforces:
-  - allowed verbs (`list`, `get`, `events`, `pod_logs`, `delete`)
-  - scope requirements
-  - forbidden kinds and endpoints
-  - approval requirements for mutations
-
-This gate is called **before any Kubernetes API interaction**. It is the single source of truth for allow/deny decisions.
+**All safety guarantees are enforced in code, not prompts.**
 
 ---
 
-## 📏 Safety Guarantees
+## High-Level Flow
 
-The entire system enforces the following global rules:
+```
 
-### 🧱 Hard Safety Rules
+MCP Client
+|
+|  JSON-RPC (stdio)
+v
+MCP Server (server.py)
+|
+|  tool dispatch
+v
+Gate (gate.py)
+|
+|  allow / block
+v
+Tool Implementation (tools_read.py / tools_write.py)
+|
+|  raw Kubernetes data
+v
+Sanitization Layer (sanitize.py)
+|
+|  redacted + bounded output
+v
+MCP Response → Client
 
-1. **Safety is enforced in code**, not in prompts.
-2. **Forbidden kinds** (like `Secret` and `ConfigMap`) can never be read, listed, or deleted.
-3. **All tools require a namespace**; no cluster-wide read or write.
-4. **No bulk operations** — no selectors, no multiple object deletes.
-5. **Mutations require explicit approval** (`approved=true`) and return denial text if absent.
-6. **One MCP tool call maps to exactly one Kubernetes API call**.
-7. **Policy denials return text, not internal errors**.
-
-These rules are enforced before any Kubernetes API call is allowed. They do not rely on prompts or heuristics.
-
----
-
-## 📦 Tool Surface (Current)
-
-The MCP server exposes these tools:
-
-| Name             | Description                                                        |
-|------------------|--------------------------------------------------------------------|
-| `k8s_list`       | List namespaced Kubernetes resources (read-only)                   |
-| `k8s_get`        | Get a single Kubernetes object by name                             |
-| `k8s_list_events`| List events in a namespace                                          |
-| `k8s_pod_logs`   | Read logs from a named pod                                         |
-| `k8s_delete`     | Delete a single resource (requires `approved=true`)                 |
-
-Each tool:
-- accepts a JSON schema-validated input
-- is enforced by the policy gate
-- returns structured text output
-
-There is **no exec into pods**, no watch streams, and no cluster-wide operations.
+```
 
 ---
 
-## 📁 Kubernetes API Access
+## Core Components
 
-- The implementation uses the **Kubernetes Python client** via `DynamicClient`.
-- Resource resolution is dynamic — **no hardcoded resource lists**.
-- Tools rely on API discovery to resolve `group/version/plural` to a Kubernetes resource.
-- All pod logs and events also use official Kubernetes API calls.
+### 1. MCP Server (`server.py`)
 
-These calls are executed only after successful policy enforcement.
+Responsibilities:
+- MCP protocol handling
+- Tool registration
+- Request dispatch
+- Error normalization
+- Startup lifecycle
 
----
-
-## 📌 Observability & Errors
-
-- Tool errors (including safety denials) are returned as **text content**, not protocol errors.
-- Internal server errors (unexpected exceptions) also return text content describing the failure.
-- No stack traces or uncaught exceptions are exposed via MCP.
-
-This helps ensure MCP clients see a consistent, safe contract.
+Non-responsibilities:
+- No Kubernetes logic
+- No policy decisions
+- No sanitization logic
 
 ---
 
-## ❌ Explicit Non-Goals
+### 2. Gate (`gate.py`) — **Single Source of Truth**
 
-These are **by design**, not missing features:
+The Gate enforces **all policy decisions**.
 
-- Reading **Secrets** or **ConfigMaps**
-- Cluster-wide listing or deletion
-- Selector-based bulk operations
-- In-cluster execution of the MCP server
-- Exec / port-forward / node OS logs
-- Inference of intent or auto-approval from prompts
+It validates every request using a `RequestContext`.
 
-These limitations simplify the safety boundary and reduce blast radius.
+#### Enforced guarantees:
+- No cluster-wide operations
+- No bulk operations
+- No selectors
+- No Secrets or ConfigMaps
+- No writes without `approved=true`
+- Namespace must always be explicit
+- One tool = one Kubernetes API call
 
----
-
-## 🕊 Design Principles
-
-1. **Fail-closed defaults**
-   - If the safety gate cannot decide, the operation is blocked.
-
-2. **One tool, one action**
-   - Simplifies auditing, reasoning, and approval semantics.
-
-3. **Deterministic control**
-   - No heuristics, no pattern matching, no ML in policy.
-
-4. **Explicit approvals**
-   - Any mutation must be clearly approved (`approved=true`).
-
-5. **Auditable text**
-   - All denials articulate reason and requirements for success.
-
-6. **Gate is authoritative**
-   - No code path bypasses the policy gate.
+If a request violates policy:
+- A `GateError` is raised
+- The server converts it to a safe text response
+- The server does **not** crash
 
 ---
 
-## 🧩 Deployment
+### 3. Tool Layer
 
-This server is intended to run as a **local access point for MCP clients** (like Claude Desktop or other agents).  
-Production deployment may involve containerization and process supervision, but those concerns are outside the scope of this project.
+#### Read Tools (`tools_read.py`)
+- `k8s_list`
+- `k8s_get`
+- `k8s_list_events`
+- `k8s_pod_logs`
+
+Characteristics:
+- Namespaced only
+- Dynamic discovery for CRDs
+- No node-level or host access
+- No cloud-provider access
+
+#### Write Tools (`tools_write.py`)
+- `k8s_delete` only
+
+Characteristics:
+- Single-object deletion
+- Explicit name required
+- `approved=true` mandatory
+- No bulk deletes
+- No selectors
 
 ---
 
-## 📌 MCP Protocol Primitives
+### 4. Sanitization Layer (`sanitize.py`) — Phase 3
 
-MCP defines:
+All tool output **must pass through sanitization** before being returned.
 
-- **Tools** — invocable commands
-- **Resources** — contextual data sources
-- **Prompts** — structured templates for model interaction
+#### Sanitization guarantees:
+- Secrets are never returned
+- Tokens, passwords, API keys are redacted
+- JWTs and bearer tokens are removed
+- High-entropy strings are redacted
+- Log output is size-bounded
+- Output is deterministic
 
-This agent implements only the **Tools** primitive in a minimal set. :contentReference[oaicite:1]{index=1}
+Sanitization happens:
+- **After** tool execution
+- **Before** MCP response
+- **Locally**, never in the LLM
 
 ---
 
-## 🧪 Status
+## What Is Never Exposed
 
-This architecture describes the **current system** as implemented — not an aspirational future.  
-Phase planning beyond this (like controlled writes, audit logging, in-cluster execution) belongs in future documentation, not here.
+This server will **never** return:
+
+- Kubernetes Secrets
+- ConfigMaps
+- Secret references
+- ServiceAccount tokens
+- Node logs
+- Host filesystem data
+- Cloud provider metadata
+- Unbounded logs
+- Raw credentials of any form
+
+These are **hard guarantees**, not configuration options.
 
 ---
 
-## 📌 Summary
+## Threat Model (Explicit)
 
-`mcp-k8s-agent` is a **safe, policy-first MCP server** for Kubernetes clusters that:
+### Defended Against
+- Prompt injection
+- Accidental secret leakage
+- Over-broad AI queries
+- Unsafe mutations
+- Log-based credential exposure
 
-- Exposes a limited, deterministic set of Kubernetes operations
-- Makes safety decisions in code
-- Never exposes dangerous operations
-- Returns structured text for all outcomes
+### Not In Scope
+- RBAC misconfiguration
+- Kubernetes cluster compromise
+- Malicious kubeconfigs
+- Host-level attacks
 
-This architecture is **the contract** — the code must always conform to it.
+---
+
+## Design Philosophy
+
+- Safety > intelligence
+- Determinism > convenience
+- Code enforcement > prompt discipline
+- Fewer features, stronger guarantees
+
+Phase 3 completes the **information safety boundary** of the system.
+```
