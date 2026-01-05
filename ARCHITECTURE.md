@@ -202,6 +202,18 @@ This phase enforces:
 
 ---
 
+### Resource Resolution (Authoritative)
+
+All Kubernetes resources (built-ins and CRDs) are resolved dynamically
+using Kubernetes API discovery via the DynamicClient.
+
+The system does NOT rely on hardcoded Kind or plural mappings.
+This guarantees compatibility with:
+- CustomResourceDefinitions (CRDs)
+- future Kubernetes API versions
+- cluster-specific extensions
+
+
 ## Phase 3 — Controlled Writes  
 **(Any resource except forbidden list)**
 

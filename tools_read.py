@@ -15,12 +15,18 @@ from sanitize import prune_k8s_object
 # -------------------------------------------------------------------
 
 def _load_dynamic() -> DynamicClient:
+    """
+    Load Kubernetes dynamic client using local kubeconfig.
+    """
     config.load_kube_config()
     api_client = client.ApiClient()
     return DynamicClient(api_client)
 
 
 def _api_version(group: str, version: str) -> str:
+    """
+    Build apiVersion string from group + version.
+    """
     group = (group or "").strip()
     version = (version or "").strip()
     return version if group == "" else f"{group}/{version}"
@@ -28,7 +34,14 @@ def _api_version(group: str, version: str) -> str:
 
 def _get_resource(dyn: DynamicClient, api_version: str, plural: str):
     """
-    Resolve a resource using the supported DynamicClient search API.
+    Resolve a Kubernetes resource via API discovery.
+
+    This works for:
+    - Core resources (pods, services, etc.)
+    - All CRDs
+    - Future Kubernetes resources
+
+    No hardcoding. No guessing.
     """
     for resource in dyn.resources.search(api_version=api_version):
         if resource.name == plural:
@@ -62,10 +75,11 @@ async def k8s_list(arguments: Dict[str, Any]) -> str:
     resource = _get_resource(dyn, api_version, plural)
 
     limit = arguments.get("limit")
-    resp = resource.get(
-        namespace=namespace,
-        limit=limit,
-    ) if limit else resource.get(namespace=namespace)
+    resp = (
+        resource.get(namespace=namespace, limit=limit)
+        if limit
+        else resource.get(namespace=namespace)
+    )
 
     raw = resp.to_dict() if hasattr(resp, "to_dict") else resp
     out = prune_k8s_object(raw if isinstance(raw, dict) else {"value": raw})

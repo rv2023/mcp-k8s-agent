@@ -15,7 +15,6 @@ from sanitize import prune_k8s_object
 # -------------------------------------------------------------------
 
 def _load_dynamic() -> DynamicClient:
-    # Local kubeconfig only (current project assumption)
     config.load_kube_config()
     api_client = client.ApiClient()
     return DynamicClient(api_client)
@@ -27,27 +26,14 @@ def _api_version(group: str, version: str) -> str:
     return version if group == "" else f"{group}/{version}"
 
 
-def _resolve_resource(
-    dyn: DynamicClient,
-    api_version: str,
-    *,
-    kind: str | None,
-    plural: str,
-):
+def _get_resource(dyn: DynamicClient, api_version: str, plural: str):
     """
-    Resolve a dynamic resource safely across kubernetes client versions.
-
-    Priority:
-    1. Use kind if provided
-    2. Fall back to plural name lookup
+    Resolve a Kubernetes resource via API discovery.
+    Works for built-ins, CRDs, and future APIs.
     """
-    if kind:
-        return dyn.resources.get(api_version=api_version, kind=kind)
-
-    for r in dyn.resources:
-        if r.api_version == api_version and r.name == plural:
-            return r
-
+    for resource in dyn.resources.search(api_version=api_version):
+        if resource.name == plural:
+            return resource
     raise ValueError(f"Resource not found: {api_version}/{plural}")
 
 
@@ -57,15 +43,21 @@ def _resolve_resource(
 
 async def k8s_delete(arguments: Dict[str, Any]) -> str:
     """
-    Delete exactly one namespaced object.
+    Delete exactly ONE namespaced Kubernetes object.
 
     Required:
-      - namespace, group, version, plural, name, approved=true
+      - namespace
+      - group
+      - version
+      - plural
+      - name
+      - approved=true
 
     Optional:
       - grace_period_seconds
       - propagation_policy
     """
+
     namespace = (arguments.get("namespace") or "").strip()
     group = (arguments.get("group") or "").strip()
     version = (arguments.get("version") or "").strip()
@@ -83,7 +75,7 @@ async def k8s_delete(arguments: Dict[str, Any]) -> str:
         approved=approved,
     )
 
-    # Gate first: fail closed, no API call if rejected.
+    # 🔒 Gate FIRST — fail closed
     enforce(ctx, arguments=arguments)
 
     if not namespace or not name:
@@ -94,20 +86,14 @@ async def k8s_delete(arguments: Dict[str, Any]) -> str:
 
     dyn = _load_dynamic()
     api_version = _api_version(group, version)
-
-    resource = _resolve_resource(
-        dyn,
-        api_version,
-        kind=kind,
-        plural=plural,
-    )
+    resource = _get_resource(dyn, api_version, plural)
 
     delete_opts = client.V1DeleteOptions()
 
-    if "grace_period_seconds" in arguments and arguments["grace_period_seconds"] is not None:
+    if arguments.get("grace_period_seconds") is not None:
         delete_opts.grace_period_seconds = int(arguments["grace_period_seconds"])
 
-    if "propagation_policy" in arguments and arguments["propagation_policy"] is not None:
+    if arguments.get("propagation_policy") is not None:
         delete_opts.propagation_policy = str(arguments["propagation_policy"])
 
     try:
