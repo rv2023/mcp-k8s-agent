@@ -5,7 +5,6 @@ from kubernetes import client, config
 from kubernetes.dynamic import DynamicClient
 
 from gate import RequestContext, enforce
-from sanitize import prune_k8s_object
 
 
 async def k8s_list(arguments: Dict[str, Any]) -> str:
@@ -32,8 +31,12 @@ async def k8s_list(arguments: Dict[str, Any]) -> str:
     )
 
     items = resource.get(namespace=namespace).to_dict()
-    pruned = prune_k8s_object(items)
-    return json.dumps(pruned, indent=2)
+
+    # IMPORTANT:
+    # - no pruning
+    # - no sanitization
+    # - raw JSON only
+    return json.dumps(items, indent=2, sort_keys=True)
 
 
 async def k8s_get(arguments: Dict[str, Any]) -> str:
@@ -62,8 +65,8 @@ async def k8s_get(arguments: Dict[str, Any]) -> str:
     )
 
     obj = resource.get(name=name, namespace=namespace).to_dict()
-    pruned = prune_k8s_object(obj)
-    return json.dumps(pruned, indent=2)
+
+    return json.dumps(obj, indent=2, sort_keys=True)
 
 
 async def k8s_list_events(arguments: Dict[str, Any]) -> str:
@@ -81,7 +84,8 @@ async def k8s_list_events(arguments: Dict[str, Any]) -> str:
     v1 = client.CoreV1Api()
 
     events = v1.list_namespaced_event(namespace=namespace).to_dict()
-    return json.dumps(events, indent=2)
+
+    return json.dumps(events, indent=2, sort_keys=True)
 
 
 async def k8s_pod_logs(arguments: Dict[str, Any]) -> str:
@@ -107,4 +111,6 @@ async def k8s_pod_logs(arguments: Dict[str, Any]) -> str:
         container=arguments.get("container"),
         tail_lines=arguments.get("tail_lines"),
     )
+
+    # Logs are already plain text
     return logs

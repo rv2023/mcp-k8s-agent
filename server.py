@@ -1,4 +1,5 @@
 from typing import List
+from sanitize import sanitize_output
 
 from mcp.server import Server, InitializationOptions
 from mcp.server.stdio import stdio_server
@@ -12,6 +13,11 @@ from tools_read import (
 )
 from tools_write import k8s_delete
 from gate import GateError
+
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("mcp-k8s-agent")
 
 
 server = Server("mcp-k8s-agent")
@@ -121,33 +127,44 @@ async def _safe_call(coro):
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     if name == "k8s_list":
-        result = await _safe_call(k8s_list(arguments))
-        return [TextContent(type="text", text=result)]
+        raw = await k8s_list(arguments)
 
-    if name == "k8s_get":
-        result = await _safe_call(k8s_get(arguments))
-        return [TextContent(type="text", text=result)]
+    elif name == "k8s_get":
+        raw = await k8s_get(arguments)
 
-    if name == "k8s_list_events":
-        result = await _safe_call(k8s_list_events(arguments))
-        return [TextContent(type="text", text=result)]
+    elif name == "k8s_list_events":
+        raw = await k8s_list_events(arguments)
 
-    if name == "k8s_pod_logs":
-        result = await _safe_call(k8s_pod_logs(arguments))
-        return [TextContent(type="text", text=result)]
+    elif name == "k8s_pod_logs":
+        raw = await k8s_pod_logs(arguments)
 
-    if name == "k8s_delete":
-        result = await _safe_call(k8s_delete(arguments))
-        return [TextContent(type="text", text=result)]
+    elif name == "k8s_delete":
+        raw = await k8s_delete(arguments)
 
-    raise ValueError(f"Unknown tool: {name}")
+    else:
+        raise ValueError(f"Unknown tool: {name}")
+
+    safe = sanitize_output(tool_name=name, raw=raw)
+
+    return [TextContent(type="text", text=safe)]
 
 
 if __name__ == "__main__":
     import asyncio
+    import logging
+    from mcp.server.stdio import stdio_server
     from mcp.types import ServerCapabilities
+    from mcp.server import InitializationOptions
+
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger("mcp-k8s-agent")
 
     async def main():
+        logger.info(
+            "mcp-k8s-agent started | Phase 3 enabled | "
+            "sanitized outputs, bounded logs, approval-gated writes"
+        )
+
         async with stdio_server() as (read_stream, write_stream):
             await server.run(
                 read_stream=read_stream,
@@ -155,6 +172,7 @@ if __name__ == "__main__":
                 initialization_options=InitializationOptions(
                     server_name="mcp-k8s-agent",
                     server_version="0.1.0",
+                    # tools are auto-derived from @server.list_tools
                     capabilities=ServerCapabilities(tools={}),
                 ),
             )
